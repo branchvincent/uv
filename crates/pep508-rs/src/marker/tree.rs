@@ -3,6 +3,7 @@ use std::fmt::{self, Display, Formatter};
 use std::ops::{Bound, Deref};
 use std::str::FromStr;
 
+use itertools::Itertools;
 use pubgrub::Range;
 #[cfg(feature = "pyo3")]
 use pyo3::{basic::CompareOp, pyclass, pymethods};
@@ -436,6 +437,11 @@ pub enum MarkerExpression {
         key: MarkerValueVersion,
         specifier: VersionSpecifier,
     },
+    VersionIn {
+        key: MarkerValueVersion,
+        versions: Vec<Version>,
+        negated: bool,
+    },
     /// An string marker comparison, e.g. `sys_platform == '...'`.
     ///
     /// Inverted string expressions, e.g `'...' == sys_platform`, are also normalized to this form.
@@ -533,6 +539,15 @@ impl Display for MarkerExpression {
                     return write!(f, "{key} {op} '{version}.*'");
                 }
                 write!(f, "{key} {op} '{version}'")
+            }
+            MarkerExpression::VersionIn {
+                key,
+                versions,
+                negated,
+            } => {
+                let op = if *negated { "not in" } else { "in" };
+                let versions = versions.iter().map(ToString::to_string).join(" ");
+                write!(f, "{key} {op} '{versions}'")
             }
             MarkerExpression::String {
                 key,
@@ -1543,6 +1558,34 @@ mod test {
     }
 
     #[test]
+    fn test_python_version_in_evaluation() {
+        let env27 = MarkerEnvironment::try_from(MarkerEnvironmentBuilder {
+            implementation_name: "",
+            implementation_version: "2.7",
+            os_name: "linux",
+            platform_machine: "",
+            platform_python_implementation: "",
+            platform_release: "",
+            platform_system: "",
+            platform_version: "",
+            python_full_version: "2.7",
+            python_version: "2.7",
+            sys_platform: "linux",
+        })
+        .unwrap();
+        let env37 = env37();
+        let marker1 = MarkerTree::from_str("python_version in \"2.7 3.2 3.3\"").unwrap();
+        let marker2 = MarkerTree::from_str("python_version in \"2.7 3.7\"").unwrap();
+        let marker3 = MarkerTree::from_str("python_version in \"2.4 3.8 4.0\"").unwrap();
+        assert!(marker1.evaluate(&env27, &[]));
+        assert!(!marker1.evaluate(&env37, &[]));
+        assert!(marker2.evaluate(&env27, &[]));
+        assert!(marker2.evaluate(&env37, &[]));
+        assert!(!marker3.evaluate(&env27, &[]));
+        assert!(!marker3.evaluate(&env37, &[]));
+    }
+
+    #[test]
     #[cfg(feature = "tracing")]
     fn warnings() {
         let env37 = env37();
@@ -1812,6 +1855,15 @@ mod test {
         assert_simplifies(
             "python_version == '3.9.0'",
             "python_full_version == '3.9.*'",
+        );
+
+        assert_simplifies(
+            "python_version in '3.9 3.11'",
+            "python_full_version == '3.9.*' or python_full_version == '3.11.*'",
+        );
+        assert_simplifies(
+            "python_version in '3.9 3.10 3.11'",
+            "python_full_version >= '3.9' and python_full_version < '3.12'",
         );
 
         assert_simplifies("python_version != '3.9'", "python_full_version != '3.9.*'");

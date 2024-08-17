@@ -146,6 +146,10 @@ pub(crate) fn parse_marker_key_op_value<T: Pep508Url>(
                 return Ok(None);
             };
 
+            if let Some(expr) = parse_version_in_expr(key.clone(), operator, &value, reporter) {
+                return Ok(Some(expr));
+            }
+
             parse_version_expr(key.clone(), operator, &value, reporter)
         }
         // The only sound choice for this is `<env key> <op> <string>`
@@ -236,6 +240,58 @@ pub(crate) fn parse_marker_key_op_value<T: Pep508Url>(
     };
 
     Ok(expr)
+}
+
+/// Creates an instance of [`MarkerExpression::VersionIn`] with the given values.
+///
+/// Reports a warning on failure, and returns `None`.
+fn parse_version_in_expr(
+    key: MarkerValueVersion,
+    operator: MarkerOperator,
+    value: &str,
+    reporter: &mut impl Reporter,
+) -> Option<MarkerExpression> {
+    if !matches!(operator, MarkerOperator::In | MarkerOperator::NotIn) {
+        return None;
+    }
+    let negated = matches!(operator, MarkerOperator::NotIn);
+
+    let mut cursor = Cursor::new(value);
+    let mut versions = Vec::new();
+
+    // Parse all of the values in the list as versions
+    loop {
+        // Allow arbitrary whitespace between versions
+        cursor.eat_whitespace();
+
+        let (start, len) = cursor.take_while(|c| !c.is_whitespace());
+        if len == 0 {
+            break;
+        }
+
+        let version = match Version::from_str(cursor.slice(start, len)) {
+            Ok(version) => version,
+            Err(err) => {
+                reporter.report(
+                    MarkerWarningKind::Pep440Error,
+                    format!(
+                        "Expected PEP 440 versions to compare with {key}, found {value},
+                        will be ignored: {err}"
+                    ),
+                );
+
+                return None;
+            }
+        };
+
+        versions.push(version);
+    }
+
+    Some(MarkerExpression::VersionIn {
+        key,
+        versions,
+        negated,
+    })
 }
 
 /// Creates an instance of [`MarkerExpression::Version`] with the given values.
